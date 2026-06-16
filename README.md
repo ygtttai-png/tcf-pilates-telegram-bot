@@ -45,6 +45,8 @@ Secret degerleri loglara yazdirilmaz. Sadece `Present` veya `Missing` bilgisi go
 
 ## Kaynak
 
+Bot once WordPress API'yi dener:
+
 ```text
 https://www.tcf.gov.tr/wp-json/wp/v2/posts?per_page=10&orderby=date&order=desc
 ```
@@ -54,6 +56,14 @@ Bot WordPress JSON cevabinda su alanlari kontrol eder:
 - `title.rendered`
 - `excerpt.rendered`
 - `content.rendered`
+
+WordPress API 403 veya baska bir hata verirse HTML fallback kullanilir:
+
+```text
+https://www.tcf.gov.tr/branslar/pilates/
+```
+
+TCF istekleri browser-like headers ve `requests.Session` ile yapilir.
 
 ## Bildirim Kurali
 
@@ -73,11 +83,18 @@ Kullanilan anahtarlar:
 
 - `tcf:last_processed_post_id`: Islenen son WordPress post id
 - `tcf:notified_post:{id}`: Bildirimi gonderilmis postlar icin ek guvenlik anahtari
+- `tcf:html_fallback:{hash}`: HTML fallback eslesmeleri icin duplicate engelleme anahtari
 - `tcf:startup_notified`: Ilk basarili workflow bildiriminin gonderildigini tutar
 - `tcf:last_error_state`: Son hata durumunu tutar
 - `tcf:error_reported:{hash}`: Ayni hatayi 6 saat icinde tekrar bildirmemek icin kullanilir
 
 `tcf:notified_post:{id}` ve hata throttle anahtarlari Redis `SET NX` ile yazilir.
+
+`UPSTASH_REDIS_REST_URL` mutlaka Upstash REST URL olmali ve `https://` ile baslamalidir. `redis://...` endpoint'i kullanilirsa bot acik bir hata verir:
+
+```text
+UPSTASH_REDIS_REST_URL must be the Upstash REST URL starting with https://, not the redis:// endpoint.
+```
 
 ## Startup Bildirimi
 
@@ -88,7 +105,9 @@ Ilk basarili workflow calismasinda Telegram'a su mesaj gonderilir:
 
 UTC time: ...
 Telegram token: Present
-Redis credentials: Present
+Redis URL: Present
+Redis token: Present
+Source used: WordPress API
 ```
 
 Secret degerleri hicbir zaman yazdirilmaz.
