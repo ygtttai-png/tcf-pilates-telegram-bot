@@ -1,7 +1,8 @@
+import hashlib
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from html import unescape
 from typing import Any
 
@@ -12,9 +13,13 @@ from dotenv import load_dotenv
 
 API_URL = "https://www.tcf.gov.tr/wp-json/wp/v2/posts?per_page=10&orderby=date&order=desc"
 REQUEST_TIMEOUT_SECONDS = 20
+ERROR_THROTTLE_SECONDS = 6 * 60 * 60
 
 REDIS_LAST_POST_ID_KEY = "tcf:last_processed_post_id"
 REDIS_NOTIFIED_POST_PREFIX = "tcf:notified_post:"
+REDIS_STARTUP_NOTIFIED_KEY = "tcf:startup_notified"
+REDIS_ERROR_STATE_KEY = "tcf:last_error_state"
+REDIS_ERROR_THROTTLE_PREFIX = "tcf:error_reported:"
 
 
 logging.basicConfig(
@@ -57,7 +62,16 @@ def get_bool_env(name: str, default: bool = False) -> bool:
     return value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def present(value: str | None) -> str:
+    return "Present" if value else "Missing"
+
+
+def utc_now_text() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
 def request_json(url: str) -> Any:
+    logging.info("Fetching WordPress API: %s", url)
     response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     return response.json()
@@ -72,6 +86,7 @@ def redis_command(*command: str) -> Any:
             "UPSTASH_REDIS_REST_URL ve UPSTASH_REDIS_REST_TOKEN tanımlı olmalı."
         )
 
+    logging.info("Running Redis command: %s", command[0])
     response = requests.post(
         redis_url.rstrip("/"),
         headers={"Authorization": f"Bearer {redis_token}"},
@@ -98,8 +113,16 @@ def set_redis_value(key: str, value: str) -> None:
     redis_command("SET", key, value)
 
 
-def set_redis_value_once(key: str, value: str) -> bool:
-    return redis_command("SET", key, value, "NX") == "OK"
+def delete_redis_value(key: str) -> None:
+    redis_command("DEL", key)
+
+
+def set_redis_value_once(key: str, value: str, ex_seconds: int | None = None) -> bool:
+    command = ["SET", key, value]
+    if ex_seconds is not None:
+        command.extend(["EX", str(ex_seconds)])
+    command.append("NX")
+    return redis_command(*command) == "OK"
 
 
 def send_telegram_message(message: str) -> None:
@@ -109,6 +132,7 @@ def send_telegram_message(message: str) -> None:
     if not token or not chat_id:
         raise RuntimeError("TELEGRAM_BOT_TOKEN ve TELEGRAM_CHAT_ID tanımlı olmalı.")
 
+    logging.info("Sending Telegram message.")
     response = requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
         json={
@@ -121,14 +145,57 @@ def send_telegram_message(message: str) -> None:
     response.raise_for_status()
 
 
-def send_error_message(error: Exception) -> None:
-    try:
-        send_telegram_message(
-            "TCF Pilates takip botunda hata oluştu:\n"
-            f"{type(error).__name__}: {error}"
-        )
-    except Exception:
-        logging.exception("Hata mesajı Telegram'a gönderilemedi.")
+def build_startup_message() -> str:
+    redis_credentials_exist = bool(
+        os.getenv("UPSTASH_REDIS_REST_URL") and os.getenv("UPSTASH_REDIS_REST_TOKEN")
+    )
+    return (
+        "✅ TCF Pilates Bot Started\n\n"
+        f"UTC time: {utc_now_text()}\n"
+        f"Telegram token: {present(os.getenv('TELEGRAM_BOT_TOKEN'))}\n"
+        f"Redis credentials: {present('1' if redis_credentials_exist else None)}"
+    )
+
+
+def send_startup_notification_once() -> None:
+    if set_redis_value_once(REDIS_STARTUP_NOTIFIED_KEY, utc_now_text()):
+        logging.info("Startup notification has not been sent before; sending now.")
+        send_telegram_message(build_startup_message())
+    else:
+        logging.info("Startup notification already sent; skipping.")
+
+
+def send_recovery_notification_if_needed() -> None:
+    previous_error = get_redis_value(REDIS_ERROR_STATE_KEY)
+    if not previous_error:
+        logging.info("No previous error state found.")
+        return
+
+    delete_redis_value(REDIS_ERROR_STATE_KEY)
+    logging.info("Previous error state cleared; sending recovery notification.")
+    send_telegram_message("✅ Bot recovered successfully")
+
+
+def error_signature(error: Exception) -> str:
+    raw = f"{type(error).__name__}:{error}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def report_error_once(error: Exception) -> None:
+    signature = error_signature(error)
+    throttle_key = f"{REDIS_ERROR_THROTTLE_PREFIX}{signature}"
+    set_redis_value(REDIS_ERROR_STATE_KEY, signature)
+
+    if not set_redis_value_once(throttle_key, utc_now_text(), ERROR_THROTTLE_SECONDS):
+        logging.info("Same error was already reported in the last 6 hours; skipping Telegram alert.")
+        return
+
+    logging.info("Reporting new or unthrottled error to Telegram.")
+    send_telegram_message(
+        "TCF Pilates takip botunda hata oluştu:\n"
+        f"{type(error).__name__}: {error}\n\n"
+        f"UTC time: {utc_now_text()}"
+    )
 
 
 def format_date(date_value: str) -> str:
@@ -184,17 +251,21 @@ def check_posts() -> dict[str, int]:
         raise ValueError("WordPress API beklenen liste formatında cevap vermedi.")
 
     valid_posts = [post for post in posts if post_id(post) > 0]
+    logging.info("Fetched %s valid posts.", len(valid_posts))
     if not valid_posts:
-        return {"checked": 0, "notified": 0}
+        return {"checked": 0, "new_posts": 0, "matched": 0, "notified": 0}
 
     last_processed_raw = get_redis_value(REDIS_LAST_POST_ID_KEY)
     last_processed_id = int(last_processed_raw) if last_processed_raw else None
     latest_seen_id = max(post_id(post) for post in valid_posts)
 
+    logging.info("Last processed post id: %s", last_processed_id)
+    logging.info("Latest seen post id: %s", latest_seen_id)
+
     if last_processed_id is None and not get_bool_env("NOTIFY_EXISTING_ON_FIRST_RUN"):
         set_redis_value(REDIS_LAST_POST_ID_KEY, str(latest_seen_id))
-        logging.info("İlk çalışma: son post id başlangıç olarak kaydedildi: %s", latest_seen_id)
-        return {"checked": len(valid_posts), "notified": 0}
+        logging.info("First run: saved latest post id as baseline.")
+        return {"checked": len(valid_posts), "new_posts": 0, "matched": 0, "notified": 0}
 
     new_posts = [
         post
@@ -202,33 +273,68 @@ def check_posts() -> dict[str, int]:
         if last_processed_id is None or post_id(post) > last_processed_id
     ]
 
+    logging.info("New posts to inspect: %s", len(new_posts))
+    matched = 0
     notified = 0
     for post in sorted(new_posts, key=post_id):
         current_post_id = post_id(post)
+        title = clean_html(post.get("title", {}).get("rendered", ""))
+        logging.info("Inspecting post %s: %s", current_post_id, title)
+
         if not matches_keywords(post_to_text(post)):
+            logging.info("Post %s did not match keywords.", current_post_id)
             continue
 
+        matched += 1
         notification_key = f"{REDIS_NOTIFIED_POST_PREFIX}{current_post_id}"
         if not set_redis_value_once(notification_key, "1"):
-            logging.info("Post daha önce bildirildi, atlandı: %s", current_post_id)
+            logging.info("Post %s was already notified; skipping.", current_post_id)
             continue
 
         send_telegram_message(build_post_message(post))
-        logging.info("Telegram bildirimi gönderildi: %s", current_post_id)
+        logging.info("Telegram notification sent for post %s.", current_post_id)
         notified += 1
 
     set_redis_value(REDIS_LAST_POST_ID_KEY, str(latest_seen_id))
-    return {"checked": len(valid_posts), "notified": notified}
+    logging.info("Saved last processed post id: %s", latest_seen_id)
+    return {
+        "checked": len(valid_posts),
+        "new_posts": len(new_posts),
+        "matched": matched,
+        "notified": notified,
+    }
 
 
 def main() -> None:
     load_dotenv()
+    logging.info("TCF Pilates bot run started.")
+    logging.info("UTC start time: %s", utc_now_text())
+    logging.info("Telegram token: %s", present(os.getenv("TELEGRAM_BOT_TOKEN")))
+    logging.info(
+        "Telegram chat id: %s",
+        present(os.getenv("TELEGRAM_CHAT_ID")),
+    )
+    logging.info(
+        "Redis credentials: %s",
+        present(
+            "1"
+            if os.getenv("UPSTASH_REDIS_REST_URL")
+            and os.getenv("UPSTASH_REDIS_REST_TOKEN")
+            else None
+        ),
+    )
+
     try:
         result = check_posts()
+        send_startup_notification_once()
+        send_recovery_notification_if_needed()
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))
     except Exception as exc:
-        logging.exception("Kontrol sırasında hata oluştu.")
-        send_error_message(exc)
+        logging.exception("Bot run failed.")
+        try:
+            report_error_once(exc)
+        except Exception:
+            logging.exception("Error alert could not be sent or rate-limited.")
         raise
 
 

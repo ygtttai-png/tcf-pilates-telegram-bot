@@ -4,6 +4,45 @@ Bu proje Turkiye Cimnastik Federasyonu Pilates duyurularini GitHub Actions ile t
 
 GitHub Actions workflow'u her 5 dakikada bir `python bot.py` komutunu calistirir. Script tek sefer kontrol yapar ve kapanir. Infinite loop kullanmaz.
 
+## Workflow
+
+Workflow dosyasi:
+
+```text
+.github/workflows/check.yml
+```
+
+Workflow ozeti:
+
+- Her 5 dakikada bir calisir: `*/5 * * * *`
+- Manuel calistirma destekler: `workflow_dispatch`
+- Python 3.11 kullanir.
+- `pip install -r requirements.txt` calistirir.
+- `python bot.py` calistirir.
+- GitHub Actions loglarinda UTC zamanini, event bilgisini, Python surumunu ve secret durumlarini `Present / Missing` olarak yazar.
+
+GitHub Actions bazen yeni schedule workflow'larini Actions sekmesinde ilk run olana kadar gec gosterebilir. Hemen test etmek icin Actions sekmesinden `Check TCF Pilates` workflow'unu acip `Run workflow` ile manuel calistirin.
+
+## GitHub Secrets
+
+Repo ayarlarindan `Settings > Secrets and variables > Actions > New repository secret` bolumune su secret'lari ekleyin:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+
+Workflow env bloklari bu secret'lari su sekilde kullanir:
+
+```yaml
+TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+```
+
+Secret degerleri loglara yazdirilmaz. Sadece `Present` veya `Missing` bilgisi gosterilir.
+
 ## Kaynak
 
 ```text
@@ -34,42 +73,39 @@ Kullanilan anahtarlar:
 
 - `tcf:last_processed_post_id`: Islenen son WordPress post id
 - `tcf:notified_post:{id}`: Bildirimi gonderilmis postlar icin ek guvenlik anahtari
+- `tcf:startup_notified`: Ilk basarili workflow bildiriminin gonderildigini tutar
+- `tcf:last_error_state`: Son hata durumunu tutar
+- `tcf:error_reported:{hash}`: Ayni hatayi 6 saat icinde tekrar bildirmemek icin kullanilir
 
-`tcf:notified_post:{id}` anahtari Redis `SET NX` ile yazilir. Bu nedenle ayni post icin tekrar Telegram bildirimi gonderilmez.
+`tcf:notified_post:{id}` ve hata throttle anahtarlari Redis `SET NX` ile yazilir.
 
-## GitHub Secrets
+## Startup Bildirimi
 
-Repo ayarlarindan `Settings > Secrets and variables > Actions > New repository secret` bolumune su secret'lari ekleyin:
-
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
-
-## GitHub Actions
-
-Workflow dosyasi:
+Ilk basarili workflow calismasinda Telegram'a su mesaj gonderilir:
 
 ```text
-.github/workflows/check.yml
+✅ TCF Pilates Bot Started
+
+UTC time: ...
+Telegram token: Present
+Redis credentials: Present
 ```
 
-Workflow:
+Secret degerleri hicbir zaman yazdirilmaz.
 
-- Her 5 dakikada bir calisir.
-- Manuel calistirma icin `workflow_dispatch` destekler.
-- Python 3.11 kullanir.
-- `pip install -r requirements.txt` calistirir.
-- `python bot.py` calistirir.
+## Health Monitoring
 
-Env degerleri workflow icinde GitHub Secrets uzerinden gecilir:
+Bot hata alirsa:
 
-```yaml
-env:
-  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-  UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-  UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+- Hata GitHub Actions loglarina yazilir.
+- Mumkunse Telegram'a hata mesaji gonderilir.
+- Ayni hata en fazla 6 saatte bir bildirilir.
+- Hata durumu Redis'e kaydedilir.
+
+Bot sonraki calismada basariyla toparlanirsa Telegram'a su mesaj gonderilir:
+
+```text
+✅ Bot recovered successfully
 ```
 
 ## Lokal Kurulum
@@ -108,18 +144,14 @@ Eski son 10 post icindeki eslesmeleri de ilk calistirmada bildirmek isterseniz w
 NOTIFY_EXISTING_ON_FIRST_RUN=true
 ```
 
-## Telegram Mesaj Formati
+## Telegram Kurs Mesaj Formati
 
 ```text
-Yeni Pilates 2. Kademe Kurs Duyurusu!
+🚨 Yeni Pilates 2. Kademe Kurs Duyurusu!
 
-Baslik: ...
+Başlık: ...
 Tarih: ...
 Link: ...
 
-Kisa ozet: ...
+Kısa özet: ...
 ```
-
-## Hata Yonetimi
-
-Kontrol sirasinda hata olursa script hata loglar, mumkunse Telegram'a hata mesaji yollar ve GitHub Actions job'u fail olur.

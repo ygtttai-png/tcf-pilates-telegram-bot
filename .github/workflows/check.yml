@@ -9,6 +9,14 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - name: Log workflow start
+        run: |
+          echo "TCF Pilates bot workflow started"
+          echo "UTC time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Event name: $GITHUB_EVENT_NAME"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -17,8 +25,25 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Log Python version
+        run: python --version
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify configured secrets
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then echo "TELEGRAM_BOT_TOKEN: Present"; else echo "TELEGRAM_BOT_TOKEN: Missing"; fi
+          if [ -n "$TELEGRAM_CHAT_ID" ]; then echo "TELEGRAM_CHAT_ID: Present"; else echo "TELEGRAM_CHAT_ID: Missing"; fi
+          if [ -n "$UPSTASH_REDIS_REST_URL" ]; then echo "UPSTASH_REDIS_REST_URL: Present"; else echo "UPSTASH_REDIS_REST_URL: Missing"; fi
+          if [ -n "$UPSTASH_REDIS_REST_TOKEN" ]; then echo "UPSTASH_REDIS_REST_TOKEN: Present"; else echo "UPSTASH_REDIS_REST_TOKEN: Missing"; fi
 
       - name: Run bot
         env:
