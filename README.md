@@ -1,8 +1,39 @@
 # TCF Pilates Telegram Takip Botu
 
-Bu proje Türkiye Cimnastik Federasyonu Pilates duyurularını Vercel üzerinde takip eder. Vercel Cron `/api/cron` route'unu her 5 dakikada bir çağırır; route WordPress API'yi ve Pilates HTML sayfasını kontrol eder, eşleşme varsa Telegram'a bildirim gönderir.
+Bu proje Turkiye Cimnastik Federasyonu Pilates duyurularini Vercel uzerinde tek seferlik bir serverless endpoint ile kontrol eder. Sonsuz dongu yoktur.
 
-Sonsuz döngü yoktur. Her cron çağrısı tek kontrol yapıp kapanır.
+Vercel Cron kaldirildi. 5 dakikada bir tetikleme isi GitHub Actions ile yapilir.
+
+## Endpointler
+
+Ana endpoint:
+
+[https://PROJECT_URL.vercel.app/api/cron](https://project_url.vercel.app/api/cron)
+
+GitHub Actions icin alias endpoint:
+
+```text
+https://SENIN-VERCEL-URL.vercel.app/api/check
+```
+
+`api/check.py`, `api/cron.py` icindeki ayni handler'i kullanir.
+
+## Vercel Deploy Notu
+
+Vercel Python entrypoint'i `pyproject.toml` icinde tanimlidir:
+
+```toml
+[tool.vercel]
+entrypoint = "api.cron:handler"
+```
+
+`vercel.json` su an bilerek bos objedir:
+
+```json
+{}
+```
+
+Bu sayede Hobby planda hata veren Vercel Cron tanimi deploy'a girmez.
 
 ## Kaynaklar
 
@@ -18,31 +49,31 @@ Yedek kaynak:
 https://www.tcf.gov.tr/branslar/pilates/
 ```
 
-## Bildirim Kuralı
+## Bildirim Kurali
 
-Post başlığı, özeti veya içeriğinde şu koşullar aranır:
+Post basligi, ozeti veya iceriginde su kosullar aranir:
 
-- `Pilates` geçmeli
-- `2. Kademe` geçmeli
-- `Temel Eğitmenlik`, `Temel Eğitim` veya `Kursu` ifadelerinden biri geçmeli
+- `Pilates` gecmeli
+- `2. Kademe` gecmeli
+- `Temel Egitmenlik`, `Temel Egitim` veya `Kursu` ifadelerinden biri gecmeli
 
-Arama büyük/küçük harf duyarsız yapılır. HTML etiketleri ve entity değerleri temizlenir.
+Arama buyuk/kucuk harf duyarsiz yapilir. HTML etiketleri ve entity degerleri temizlenir.
 
 ## Durum Saklama
 
-Tekrar bildirimleri engellemek için Upstash Redis veya Vercel KV kullanılır.
+Tekrar bildirimleri engellemek icin Upstash Redis veya Vercel KV kullanilir.
 
-Kullanılan anahtarlar:
+Kullanilan anahtarlar:
 
-- `tcf:last_processed_post_id`: WordPress API'de işlenen son post id
-- `tcf:notified_post:{id}`: Bildirimi gönderilmiş postlar için ek güvenlik anahtarı
-- `tcf:pilates_page_hash`: Pilates HTML sayfasının son bildirilen hash değeri
+- `tcf:last_processed_post_id`: WordPress API'de islenen son post id
+- `tcf:notified_post:{id}`: Bildirimi gonderilmis postlar icin ek guvenlik anahtari
+- `tcf:pilates_page_hash`: Pilates HTML sayfasinin son bildirilen hash degeri
 
-`tcf:notified_post:{id}` anahtarı `SET NX` ile yazıldığı için aynı post için duplicate Telegram bildirimi gönderilmez.
+`tcf:notified_post:{id}` anahtari `SET NX` ile yazildigi icin ayni post icin duplicate Telegram bildirimi gonderilmez.
 
 ## Kurulum
 
-Python 3.10 veya üzeri gerekir.
+Python 3.10 veya uzeri gerekir.
 
 ```bash
 pip install -r requirements.txt
@@ -55,18 +86,18 @@ Windows PowerShell:
 Copy-Item .env.example .env
 ```
 
-`.env` dosyasını doldurun:
+`.env` dosyasini doldurun:
 
 ```env
 TELEGRAM_BOT_TOKEN=123456789:telegram_bot_tokeniniz
 TELEGRAM_CHAT_ID=123456789
 UPSTASH_REDIS_REST_URL=https://example.upstash.io
 UPSTASH_REDIS_REST_TOKEN=upstash_rest_tokeniniz
-CRON_SECRET=uzun_rastgele_bir_deger
+CRON_SECRET=
 NOTIFY_EXISTING_ON_FIRST_RUN=false
 ```
 
-Vercel KV kullanıyorsanız `UPSTASH_*` yerine şu değişkenleri de kullanabilirsiniz:
+Vercel KV kullaniyorsaniz `UPSTASH_*` yerine su degiskenleri de kullanabilirsiniz:
 
 ```env
 KV_REST_API_URL=https://example.upstash.io
@@ -81,7 +112,7 @@ Tek seferlik kontrol:
 python bot.py
 ```
 
-Vercel API route'unu lokal test etmek için:
+Vercel API route'unu lokal test etmek icin:
 
 ```bash
 vercel dev
@@ -90,54 +121,61 @@ vercel dev
 Sonra:
 
 ```bash
-curl -H "Authorization: Bearer uzun_rastgele_bir_deger" http://localhost:3000/api/cron
+curl http://localhost:3000/api/cron
+curl http://localhost:3000/api/check
 ```
 
-## Vercel Deploy
+## GitHub Actions Ping
 
-1. Projeyi Vercel'e deploy edin.
-2. Vercel Project Settings > Environment Variables bölümüne şu değerleri ekleyin:
+Workflow dosyasi:
+
+```text
+.github/workflows/ping.yml
+```
+
+Deploy'dan sonra workflow icindeki URL'yi kendi Vercel URL'inizle degistirin:
+
+```yaml
+run: curl -fsS https://SENIN-VERCEL-URL.vercel.app/api/check
+```
+
+Ornek:
+
+```yaml
+run: curl -fsS https://tcf-pilates-telegram-bot.vercel.app/api/check
+```
+
+## Vercel Environment Variables
+
+Vercel Project Settings > Environment Variables bolumune su degerleri ekleyin:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
-- `CRON_SECRET`
-- `NOTIFY_EXISTING_ON_FIRST_RUN` isteğe bağlı
+- `CRON_SECRET` istege bagli; GitHub Actions curl komutu headersizse bos birakin
+- `NOTIFY_EXISTING_ON_FIRST_RUN` istege bagli
 
-3. `vercel.json` içindeki cron ayarı route'u her 5 dakikada bir tetikler:
-
-```json
-{
-  "crons": [
-    {
-      "path": "/api/cron",
-      "schedule": "*/5 * * * *"
-    }
-  ]
-}
-```
-
-## Telegram Mesaj Formatı
+## Telegram Mesaj Formati
 
 ```text
-🚨 Yeni Pilates 2. Kademe Kurs Duyurusu!
+Yeni Pilates 2. Kademe Kurs Duyurusu!
 
-Başlık: ...
+Baslik: ...
 Tarih: ...
 Link: ...
 
-Kısa özet: ...
+Kisa ozet: ...
 ```
 
-## İlk Çalıştırma Davranışı
+## Ilk Calistirma Davranisi
 
-Varsayılan olarak ilk çalıştırmada mevcut son post id başlangıç noktası olarak kaydedilir ve eski duyurular için bildirim gönderilmez. İlk çalıştırmada mevcut eşleşmeleri de bildirmek isterseniz:
+Varsayilan olarak ilk calistirmada mevcut son post id baslangic noktasi olarak kaydedilir ve eski duyurular icin bildirim gonderilmez. Ilk calistirmada mevcut eslesmeleri de bildirmek isterseniz:
 
 ```env
 NOTIFY_EXISTING_ON_FIRST_RUN=true
 ```
 
-## Hata Yönetimi
+## Hata Yonetimi
 
-Route hata alırsa kapanmaz; HTTP 500 JSON yanıtı döner ve mümkünse Telegram'a hata mesajı gönderir. Bir sonraki Vercel Cron çağrısı normal şekilde tekrar kontrol yapar.
+Route hata alirsa HTTP 500 JSON yaniti doner ve mumkunse Telegram'a hata mesaji gonderir. Bir sonraki GitHub Actions ping'i normal sekilde tekrar kontrol yapar.
